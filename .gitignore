@@ -1,7 +1,29 @@
+# secrets
 .env
+.env.*
+
+# data + caches
 data/cache/
+data/derived/
 *.db
+*.sqlite
+*.sqlite3
 *.parquet
+*.feather
+
+# python
 __pycache__/
+*.py[cod]
 .venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# os / editor
 .DS_Store
+.idea/
+.vscode/

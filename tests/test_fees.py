@@ -1,0 +1,68 @@
+"""The fee schedule must reproduce Kalshi's own published table exactly."""
+import math
+
+from kalshi008 import fees
+from kalshi008.config import BUCKET_EDGES
+
+
+def test_formula_reproduces_every_published_row():
+    """PREREG s6: the schedule is verified from Kalshi's own documentation.
+
+    Pages 4-5 of kalshi-fee-schedule.pdf publish a 21-row price->fee table. If the
+    formula in fees.py is right it reproduces all 21 rows for both 1 and 100 contracts.
+    """
+    assert fees.verify_against_published_table() == []
+
+
+def test_constants_match_the_primary_source():
+    assert fees.TAKER_COEFFICIENT == 0.07
+    assert fees.MAKER_COEFFICIENT == 0.0175
+    assert fees.DEFAULT_TAKER_MULTIPLIER == 1.0
+    # The maker multiplier defaults to ZERO -- this is why some write-ups say "0% fees".
+    assert fees.DEFAULT_MAKER_MULTIPLIER == 0.0
+    # "There is no settlement fee." -- page 3.
+    assert fees.SETTLEMENT_FEE_DOLLARS == 0.0
+
+
+def test_peak_fee_is_1_75_percent_not_7_percent():
+    """s6 records that public write-ups claim "a tier capping at 7% of winnings".
+
+    The 0.07 is a coefficient on P*(1-P), not a cap. The maximum per-contract fee is
+    0.07 * 0.25 = $0.0175, i.e. 1.75% of the $1 notional.
+    """
+    peak = max(
+        fees.TAKER_COEFFICIENT * (p / 100) * (1 - p / 100) for p in range(0, 101)
+    )
+    assert math.isclose(peak, 0.0175, rel_tol=1e-12)
+
+
+def test_fee_is_symmetric_in_yes_and_no():
+    """Buying NO at 1-p costs the same as buying YES at p, so the floor is symmetric."""
+    for p in (0.01, 0.13, 0.37, 0.5, 0.62, 0.88, 0.99):
+        assert math.isclose(
+            fees.fee_equivalent_price_error_cents(p * 100),
+            fees.fee_equivalent_price_error_cents((1 - p) * 100),
+            rel_tol=1e-12,
+        )
+
+
+def test_bucket_floors_peak_in_the_middle_and_vanish_at_the_extremes():
+    floors = fees.bucket_fee_floors(BUCKET_EDGES)
+    assert len(floors) == 10
+    mids = [f.floor_at_midpoint_cents for f in floors]
+    assert math.isclose(max(mids), 1.7325, abs_tol=1e-9)   # 45c and 55c buckets
+    assert math.isclose(mids[0], 0.3325, abs_tol=1e-9)     # [0,10)
+    assert math.isclose(mids[-1], 0.3325, abs_tol=1e-9)    # [90,100]
+    assert mids[0] < mids[4] and mids[-1] < mids[5]
+
+
+def test_zero_multiplier_series_have_no_fee_floor():
+    """14 series carry fee_multiplier 0 and therefore face a zero floor."""
+    assert fees.fee_equivalent_price_error_cents(50.0, multiplier=0.0) == 0.0
+
+
+def test_two_leg_floor_is_exactly_double():
+    for p in (5.0, 25.0, 50.0, 75.0, 95.0):
+        one = fees.fee_equivalent_price_error_cents(p, legs=1)
+        two = fees.fee_equivalent_price_error_cents(p, legs=2)
+        assert math.isclose(two, 2 * one, rel_tol=1e-12)
