@@ -1,4 +1,3 @@
-"""Endpoint contracts: schema folding, combo detection, outcome-blind sampling."""
 import pytest
 
 from kalshi008.categories import KALSHI_TO_PREREG, check_mapping_covers, to_prereg_category
@@ -7,11 +6,6 @@ from kalshi008.ingest import (
     Candle, event_sample_score, is_combo, normalise_candle, parse_ts, select_events,
     series_ticker_of,
 )
-
-
-# --------------------------------------------------------------------------
-# the two candlestick schemas
-# --------------------------------------------------------------------------
 
 LIVE = {
     "end_period_ts": 1787061660, "open_interest_fp": "7.00",
@@ -36,11 +30,6 @@ def test_live_and_archive_candles_fold_to_the_same_shape():
 
 
 def test_no_trade_candle_still_yields_a_mid():
-    """The archive tier writes explicit nulls; the live tier omits the keys entirely.
-
-    Either way the BOOK is still populated, which is exactly why the mid comes from
-    yes_bid/yes_ask and not from the trade fields.
-    """
     live_no_trade = {"end_period_ts": 1, "price": {"previous_dollars": "0.43"},
                      "volume_fp": "0.00",
                      "yes_bid": {"close_dollars": "0.33"}, "yes_ask": {"close_dollars": "0.42"}}
@@ -69,22 +58,13 @@ def test_missing_book_side_gives_no_mid():
     assert c.mid is None
 
 
-# --------------------------------------------------------------------------
-# combos
-# --------------------------------------------------------------------------
-
 def test_combo_detection_uses_mve_fields_not_exchange_index():
-    """exchange_index is NOT a reliable marker: archived combos carry exchange_index 0."""
     archived_combo = {"exchange_index": 0, "mve_collection_ticker": "KXMVESPORTS-R"}
     ordinary = {"exchange_index": 1}
     assert is_combo(archived_combo)
     assert not is_combo(ordinary)
     assert is_combo({"mve_selected_legs": [{"market_ticker": "X"}]})
 
-
-# --------------------------------------------------------------------------
-# sampling is outcome-blind
-# --------------------------------------------------------------------------
 
 def test_sample_score_depends_on_nothing_but_ticker_and_seed():
     a = event_sample_score("KXHIGHNY-26AUG19")
@@ -99,7 +79,6 @@ def test_sample_is_stable_and_roughly_uniform():
     s1 = select_events(evs, 500)
     assert len(s1) == 500
     assert s1 == select_events(evs, 500)
-    # a 10% draw of 5000 sequentially-named events should not cluster in one decile
     deciles = {int(e.split("-")[1]) // 500 for e in s1}
     assert len(deciles) >= 8
 
@@ -115,10 +94,6 @@ def test_timestamp_parsing_handles_both_kalshi_formats():
     assert parse_ts(None) is None
     assert parse_ts("") is None
 
-
-# --------------------------------------------------------------------------
-# category mapping
-# --------------------------------------------------------------------------
 
 def test_every_mapping_target_is_one_of_the_six_frozen_categories():
     assert set(KALSHI_TO_PREREG.values()) <= set(CATEGORIES)

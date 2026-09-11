@@ -1,14 +1,3 @@
-"""Render FINDINGS_008.md.
-
-BUILD_PROMPT requires this file to contain, in order: the verified fee schedule with
-source URL and date; data provenance by endpoint with realised date range; the
-settlement-join hand-check; the horizon timestamp assertion result; the markets-per-event
-distribution and distinct event count; ALL 180 calibration cells with naive and clustered
-standard errors; the count of cells passing at uncorrected t > 2.0 versus corrected
-t > 3.5; the fee overlay; the permutation null results; the s8 conclusion; and a plain
-list of anything built that is believed not to work as intended.
-"""
-
 from __future__ import annotations
 
 import datetime as dt
@@ -41,7 +30,6 @@ def _fmt(v: Any, nd: int = 4, width: int = 0) -> str:
 
 
 def _cells_table(cells: pd.DataFrame) -> str:
-    """All 180 cells. Not summarised to the interesting ones."""
     hdr = (
         "| horizon | category | bucket | n mkts | n events | mean implied | realized | "
         "diff (c) | SE naive | SE binom | SE binom-clu | SE CR0 | SE CR1 | SE gov | "
@@ -124,7 +112,6 @@ def write_findings(
     A("---")
     A("")
 
-    # ---------------- 1. fee schedule
     A("## 1. Verified fee schedule (§6, BUILD step 0)")
     A("")
     A(f"**Source:** <{fee['source_url']}> — *Fee Schedule for July 2026 - 7.7.26 Update*  ")
@@ -181,7 +168,6 @@ def write_findings(
     A("its level, decides which cells can clear it.")
     A("")
 
-    # ---------------- 2. provenance
     A("---")
     A("")
     A("## 2. Data provenance (BUILD step 1)")
@@ -262,7 +248,6 @@ def write_findings(
     A(f"| snapshots produced | {prices.get('snapshots_produced', 0):,} |")
     A("")
 
-    # ---------------- 3. gates
     A("---")
     A("")
     A("## 3. Gates")
@@ -394,7 +379,6 @@ def write_findings(
     A(f"the ratio of distinct events to markets is **{mpe.get('effective_n_ratio')}**.")
     A("")
 
-    # ---------------- 4. cells
     A("---")
     A("")
     A("## 4. Calibration tables — all 180 cells (BUILD step 5)")
@@ -410,7 +394,6 @@ def write_findings(
     A(_cells_table(cells))
     A("")
 
-    # ---------------- 5. significance
     A("---")
     A("")
     A("## 5. Significance (BUILD step 6)")
@@ -458,7 +441,6 @@ def write_findings(
               f"{_fmt(r.get('n_events'))} | {'yes' if r.get('survives_coarse') else '**no**'} |")
         A("")
 
-    # ---------------- 6. fee overlay
     A("---")
     A("")
     A("## 6. Fee overlay (BUILD step 7)")
@@ -493,7 +475,6 @@ def write_findings(
         A("No cell clears both gates.")
     A("")
 
-    # ---------------- 7. null tests
     A("---")
     A("")
     A("## 7. Null tests (BUILD step 8)")
@@ -642,7 +623,6 @@ def write_findings(
     A("raw clustered value) so the guard's effect is visible in every cell.")
     A("")
 
-    # ---------------- 8. conclusion
     A("---")
     A("")
     A("## 8. Conclusion (§8)")
@@ -685,7 +665,6 @@ def write_findings(
     A("informed by this study.")
     A("")
 
-    # ---------------- 9. robustness
     A("---")
     A("")
     A("## 9. Robustness checks")
@@ -727,7 +706,6 @@ def write_findings(
             A(f"| {h} | {v:.3f} |")
         A("")
 
-    # ---------------- 9b. book quality
     A("---")
     A("")
     A("## 9b. Where the deviation actually comes from — book quality")
@@ -777,7 +755,6 @@ def write_findings(
     A("pre-registration exists to prevent.")
     A("")
 
-    # ---------------- 10. what does not work
     A("---")
     A("")
     A("## 10. What I built that does not work as intended")

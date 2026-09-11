@@ -1,18 +1,3 @@
-"""Rate-limited, cached client for Kalshi's public market-data API.
-
-No authentication is used or needed. The client identifies itself honestly in the
-User-Agent and paces itself to a rate measured as safe on 2026-08-21:
-
-    4 req/s -> 60/60 HTTP 200
-    8 req/s -> 41/60 HTTP 200, 19 HTTP 429
-
-This is a free public endpoint. REQUESTS_PER_SECOND is a courtesy limit, not a
-performance knob.
-
-Responses are cached in a SQLite file keyed by URL so a long backfill is resumable and
-so re-running the analysis costs no requests at all.
-"""
-
 from __future__ import annotations
 
 import gzip
@@ -30,12 +15,7 @@ from .config import BASE_URL, CACHE_DIR, REQUESTS_PER_SECOND, USER_AGENT
 
 
 class KalshiAPIUnreachable(RuntimeError):
-    """Raised when the API cannot be reached.
-
-    BUILD_PROMPT step 1: 'If the API is unreachable, stop and report it. Do not
-    substitute a scraped aggregator or a third-party mirror.' Nothing in this package
-    catches this and falls back to another data source.
-    """
+    pass
 
 
 @dataclass
@@ -64,12 +44,10 @@ def free_disk_gb(path: str = ".") -> float:
 
 
 class DiskSpaceExhausted(RuntimeError):
-    """Raised when the response cache would push free disk below the guard threshold."""
+    pass
 
 
 class _RateLimiter:
-    """Simple token-free pacer: never issue two requests closer than 1/rate apart."""
-
     def __init__(self, rate_per_second: float) -> None:
         self._gap = 1.0 / rate_per_second
         self._lock = threading.Lock()
@@ -105,8 +83,6 @@ class KalshiClient:
         self._local = threading.local()
         self._init_db()
 
-    # ---------------- cache ----------------
-
     def _conn(self) -> sqlite3.Connection:
         c = getattr(self._local, "conn", None)
         if c is None:
@@ -136,7 +112,6 @@ class KalshiClient:
         return status, json.loads(gzip.decompress(blob).decode("utf8"))
 
     def _check_disk(self) -> None:
-        """Stop rather than fill the user's disk. Checked every 500 cache writes."""
         self._disk_checked += 1
         if self._disk_checked % 500:
             return
@@ -164,13 +139,6 @@ class KalshiClient:
         return self._conn().execute("SELECT COUNT(*) FROM resp").fetchone()[0]
 
     def purge_cached(self, like_patterns: list[str]) -> int:
-        """Drop cached responses matching SQL LIKE patterns and reclaim the file space.
-
-        The census listing pages are large and are read exactly twice (pass 1 and pass 2).
-        Once the sample is fixed they are dead weight, and on a machine that is short of
-        disk they compete with the candlestick responses that the analysis actually needs.
-        Purging them costs re-fetch time on a future run but not correctness.
-        """
         c = self._conn()
         removed = 0
         for pat in like_patterns:
@@ -181,8 +149,6 @@ class KalshiClient:
         c.commit()
         return removed
 
-    # ---------------- fetch ----------------
-
     def get(
         self,
         path: str,
@@ -191,11 +157,6 @@ class KalshiClient:
         max_retries: int = 6,
         use_cache: bool = True,
     ) -> Any:
-        """GET a path relative to the base URL, returning parsed JSON.
-
-        404 returns None when allow_404 is set, and the 404 itself is cached so a
-        resumed run does not re-request known-missing resources.
-        """
         url = self.base_url + path
         if use_cache:
             hit = self.cache_get(url)
@@ -247,9 +208,8 @@ class KalshiClient:
                 elif code >= 400:
                     self.stats.http_other[code] = self.stats.http_other.get(code, 0) + 1
                     if code < 500 and code != 429:
-                        # a genuine client error: retrying will not help
                         raise KalshiAPIUnreachable(f"{last_err} for {url}") from e
-            except Exception as e:  # network / timeout / json
+            except Exception as e:
                 last_err = f"{type(e).__name__}: {e}"
 
             self.stats.retries += 1
@@ -260,16 +220,9 @@ class KalshiClient:
             f"gave up after {max_retries} attempts on {url}: {last_err}"
         )
 
-    # ---------------- paging ----------------
-
     def paginate(
         self, path: str, key: str, *, limit: int = 1000, max_pages: int | None = None
     ) -> Iterator[list[dict]]:
-        """Yield successive pages of a cursor-paginated list endpoint.
-
-        The cursor is part of the cache key, so a resumed run replays the same page
-        sequence from cache without re-requesting it.
-        """
         sep = "&" if "?" in path else "?"
         cursor: str | None = None
         pages = 0
@@ -287,5 +240,4 @@ class KalshiClient:
 
 
 def check_reachable(client: KalshiClient) -> dict:
-    """BUILD step 1 precondition. Raises KalshiAPIUnreachable rather than falling back."""
     return client.get("/exchange/status", use_cache=False)

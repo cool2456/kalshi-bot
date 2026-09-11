@@ -1,4 +1,3 @@
-"""PREREG s5: clustered standard errors, and the effective N is the event count."""
 import math
 
 import numpy as np
@@ -7,12 +6,7 @@ from kalshi008.stats import calibration_cell, permute_outcomes_within_group
 
 
 def test_clustering_inflates_se_when_markets_share_an_event():
-    """s5's whole point: five markets in one event are not five observations.
-
-    Ten independent events vs ten markets in two events, same residuals. The clustered
-    SE must be materially larger in the second case; the naive SE cannot tell them apart.
-    """
-    p = [0.4] * 10          # implied 0.40, realized 0.50 -> a real, non-zero difference
+    p = [0.4] * 10
     y = [1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
     indep = calibration_cell(p, y, [f"e{i}" for i in range(10)])
     dep = calibration_cell(p, y, ["A"] * 5 + ["B"] * 5)
@@ -30,11 +24,6 @@ def test_effective_n_is_events_not_markets():
 
 
 def test_single_cluster_yields_no_clustered_se():
-    """One event cannot support a cluster-variance estimate. NaN, never a small number.
-
-    This matters: a cell backed by a single event must be incapable of producing a
-    finding, and NaN propagates to the t-statistic so it fails every threshold.
-    """
     c = calibration_cell([0.5] * 5, [1, 0, 1, 0, 1], ["only"] * 5)
     assert c.n_events == 1
     assert math.isnan(c.se_clustered_cr1)
@@ -54,7 +43,6 @@ def test_perfectly_calibrated_data_gives_zero_difference():
 
 
 def test_permutation_preserves_each_groups_yes_count_exactly():
-    """BUILD step 8: "preserving the marginal YES rate". Exactly, not in expectation."""
     rng = np.random.default_rng(1)
     y = np.array([1, 1, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0])
     g = np.array(["A"] * 6 + ["B"] * 6)
@@ -74,35 +62,20 @@ def test_permutation_actually_shuffles():
     assert len(seen) > 1
 
 
-# ---------------------------------------------------------------------------
-# Regression tests for the SE guard. The bug these pin down manufactured findings.
-# ---------------------------------------------------------------------------
-
 def test_nested_ladder_degeneracy_cannot_manufacture_a_finding():
-    """The critical bug, found by adversarial review, pinned down.
-
-    A nested threshold ladder inside ONE event ("temp above 68 / 69 / 70 ...") is a real
-    Kalshi structure. 30 such markets across 6 events, all priced 50c, market perfectly
-    calibrated, all 6 events resolving NO (probability 1/32).
-
-    Every residual is then identical, so the cluster-robust meat is exactly zero. An
-    independence-based model SE would give sqrt(30*0.25)/30 = 0.0913 -- the standard error
-    for THIRTY independent draws when there are only SIX -- and t = -5.48, which clears
-    the Bonferroni threshold on data that is calibrated by construction.
-    """
     p = [0.5] * 30
     y = [0] * 30
     ev = [f"E{i // 5}" for i in range(30)]
     c = calibration_cell(p, y, ev)
 
     assert c.n_events == 6
-    assert c.se_clustered_cr1 == 0.0                     # meat is exactly zero
-    assert math.isnan(c.t_clustered_unguarded)           # unguarded is uninformative
-    assert math.isclose(c.se_binomial, 0.0912870929, rel_tol=1e-6)          # independence
+    assert c.se_clustered_cr1 == 0.0
+    assert math.isnan(c.t_clustered_unguarded)
+    assert math.isclose(c.se_binomial, 0.0912870929, rel_tol=1e-6)
     assert math.isclose(c.se_binomial_clustered, 0.5 / math.sqrt(6), rel_tol=1e-9)
     assert c.se_governing == c.se_binomial_clustered
-    assert abs(c.t_clustered) < 2.5                      # correct value is -2.449
-    assert abs(c.t_clustered) < 3.5                      # and so cannot become a finding
+    assert abs(c.t_clustered) < 2.5
+    assert abs(c.t_clustered) < 3.5
 
 
 def test_clustered_model_se_collapses_to_the_independent_one_when_each_market_is_its_own_event():
@@ -124,7 +97,6 @@ def test_clustered_model_se_is_never_smaller_than_the_independent_one():
 
 
 def test_exact_enumeration_false_positive_rate_is_zero():
-    """Exhaustive over all 2^6 event outcomes for the ladder above."""
     import itertools
     p = [0.5] * 30
     ev = [f"E{i // 5}" for i in range(30)]

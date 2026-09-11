@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""Experiment 008 runner.
-
-    python scripts/run_calibration.py --fees              # step 0: the fee schedule
-    python scripts/run_calibration.py --ingest            # steps 1-3: data + snapshots
-    python scripts/run_calibration.py --gates             # steps 2-4: run every gate
-    python scripts/run_calibration.py --permutation-null  # step 8
-    python scripts/run_calibration.py --full              # everything + FINDINGS_008.md
-
-This is a MEASUREMENT. It produces no trading rule and no strategy. PREREG_008 s8
-forbids designing one from these results without a new pre-registration.
-"""
 
 from __future__ import annotations
 
@@ -55,10 +44,6 @@ def rule(title: str) -> None:
     log(title)
     log("=" * 78)
 
-
-# ===========================================================================
-# --fees  (BUILD step 0)
-# ===========================================================================
 
 def cmd_fees() -> dict:
     rule("STEP 0 — KALSHI FEE SCHEDULE, verified from Kalshi's own documentation")
@@ -125,10 +110,6 @@ def cmd_fees() -> dict:
     return out
 
 
-# ===========================================================================
-# --ingest  (BUILD steps 1-3)
-# ===========================================================================
-
 def cmd_ingest(args) -> dict:
     rule("STEPS 1-3 — DATA INGESTION, SETTLEMENT JOIN, HORIZON SNAPSHOTS")
     client = KalshiClient(offline=args.offline, min_free_gb=args.min_free_gb)
@@ -189,9 +170,6 @@ def cmd_ingest(args) -> dict:
     free = free_disk_gb(".")
     log(f"    free disk: {free:.2f} GB")
 
-    # The census listing pages are read exactly twice and are then dead weight. On a
-    # machine short of disk they would compete with the candlestick responses the
-    # analysis actually needs, so drop them before the price fetch starts.
     if free < args.purge_cache_below_gb:
         before = client.cache_size()
         n = client.purge_cached([
@@ -225,10 +203,6 @@ def cmd_ingest(args) -> dict:
     ))
     return dict(census=rep, sample=sinfo, prices=pinfo)
 
-
-# ===========================================================================
-# --gates  (BUILD steps 2, 3, 4)
-# ===========================================================================
 
 def _load_for_analysis():
     p_snap, p_mk = derived("snapshots.jsonl"), derived("sampled_markets.jsonl")
@@ -275,7 +249,6 @@ def cmd_gates(args) -> dict:
             detail={"status": "NOT RUN -- --offline was set; network required"},
         ))
 
-    # Step 3
     log("")
     from kalshi008.horizons import Snapshot
     snap_objs = [Snapshot(**{k: v for k, v in s.items() if k in Snapshot.__annotations__}) for s in snaps]
@@ -293,7 +266,6 @@ def cmd_gates(args) -> dict:
     )
     log(g3b.render()); results.append(g3b)
 
-    # Step 4
     log("")
     ev_index = load_json("events_index.json") or {}
     if not ev_index and not args.offline:
@@ -302,10 +274,6 @@ def cmd_gates(args) -> dict:
         ev_index = {}
         want = sorted({m["event_ticker"] for m in sampled})
         for i, ev in enumerate(want, 1):
-            # with_nested_markets costs the same one request and carries the event's
-            # FULL market list, which is what makes the Step 4 completeness guard real
-            # rather than inert: a partially sampled event would otherwise show 0 YES and
-            # be reported as a violation of mutual exclusivity that never happened.
             payload = client.get(f"/events/{ev}?with_nested_markets=true", allow_404=True)
             if payload and payload.get("event"):
                 e = payload["event"]
@@ -340,10 +308,6 @@ def cmd_gates(args) -> dict:
     return dict(passed=all_pass, results=[dict(name=r.name, passed=r.passed) for r in results],
                 markets_per_event=dist)
 
-
-# ===========================================================================
-# --permutation-null  (BUILD step 8)
-# ===========================================================================
 
 def cmd_permutation(args) -> dict:
     rule("STEP 8 — NULL TESTS (two of them; see DECISIONS_008 decision 14)")
@@ -450,10 +414,6 @@ def cmd_permutation(args) -> dict:
     return out
 
 
-# ===========================================================================
-# --full
-# ===========================================================================
-
 def cmd_full(args) -> dict:
     fee = cmd_fees()
     if not args.no_ingest:
@@ -499,7 +459,6 @@ def cmd_full(args) -> dict:
         recl.to_csv(derived("recluster_hits.csv"), index=False)
     save_json("conclusion.json", concl)
 
-    # ---- robustness checks (DECISIONS decisions 6 and 12)
     rule("ROBUSTNESS CHECKS")
     rb = {}
     sub2 = analysis.all_three_horizons_subset(df)
@@ -552,7 +511,7 @@ def cmd_full(args) -> dict:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(description="Experiment 008: Kalshi calibration measurement")
     ap.add_argument("--fees", action="store_true")
     ap.add_argument("--ingest", action="store_true")
     ap.add_argument("--gates", action="store_true")

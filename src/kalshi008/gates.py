@@ -1,14 +1,3 @@
-"""The BUILD_PROMPT gates. Every one of these is RUN, not asserted in prose.
-
-BUILD_PROMPT: "Do not report a gate as passed without running it."
-
-  Step 2  settlement join    -- definitive outcomes, voided excluded and counted,
-                                plus a hand-check of 20 markets across categories
-                                against a fresh single-market fetch.
-  Step 3  horizon timestamps -- in horizons.py (audit_gate / audit_close_before_settlement)
-  Step 4  event clustering   -- on a mutually-exclusive event, exactly one market YES.
-"""
-
 from __future__ import annotations
 
 import collections
@@ -34,13 +23,7 @@ class GateResult:
         return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Step 2 -- settlement join
-# ---------------------------------------------------------------------------
-
 def gate_definitive_outcomes(analysis_markets: Sequence[dict], all_markets: Sequence[dict]) -> GateResult:
-    """Every market in the ANALYSIS set has a definitive YES/NO outcome, and
-    non-definitive markets are excluded and counted (PREREG s2)."""
     bad = [m["ticker"] for m in analysis_markets if m.get("result") not in DEFINITIVE_RESULTS]
     excluded = collections.Counter(
         str(m.get("result")) for m in all_markets if m.get("result") not in DEFINITIVE_RESULTS
@@ -59,12 +42,6 @@ def gate_definitive_outcomes(analysis_markets: Sequence[dict], all_markets: Sequ
 
 
 def gate_result_matches_settlement_value(markets: Sequence[dict]) -> GateResult:
-    """Cross-check the join key: `result` must agree with `settlement_value_dollars`.
-
-    A market joined to the wrong resolution is the failure mode BUILD step 2 warns
-    about -- it "produces a calibration finding out of nothing". These are two
-    independently populated fields, so disagreement means a bad join.
-    """
     mismatches = []
     checked = 0
     for m in markets:
@@ -96,13 +73,6 @@ def hand_check_settlement_join(
     client: KalshiClient, markets: Sequence[dict], n_per_category: int = 4,
     categories: Sequence[str] = ("Weather", "Economics", "Politics", "Sports", "Financial", "Other"),
 ) -> GateResult:
-    """BUILD step 2: "verify the join on a hand-checked sample of 20 markets across
-    categories."
-
-    Each sampled market is re-fetched INDIVIDUALLY from GET /markets/{ticker} -- a
-    different code path from the bulk listing that built the census -- and its outcome,
-    event and timestamps are compared field by field.
-    """
     by_cat: dict[str, list[dict]] = collections.defaultdict(list)
     for m in markets:
         by_cat[m["category"]].append(m)
@@ -116,10 +86,6 @@ def hand_check_settlement_join(
         step = max(1, len(pool) // n_per_category)
         picked = pool[::step][:n_per_category]
         for m in picked:
-            # GET /markets/{ticker} serves the LIVE tier only and 404s on archived
-            # markets, so fall back to the archive endpoint. Without this the hand-check
-            # reports "not retrievable" for every market older than the historical
-            # cutoff, which is most of them.
             fresh = client.get(f"/markets/{m['ticker']}", allow_404=True)
             source = "live"
             if not fresh or "market" not in fresh:
@@ -164,41 +130,9 @@ def hand_check_settlement_join(
     )
 
 
-# ---------------------------------------------------------------------------
-# Step 4 -- event clustering
-# ---------------------------------------------------------------------------
-
 def gate_mutually_exclusive_events(
     events: dict[str, dict], markets: Sequence[dict], require_complete: bool = True
 ) -> GateResult:
-    """BUILD step 4: assert the event grouping is right.
-
-    The build spec words this as "on an event with N mutually exclusive outcomes, assert
-    exactly one resolves YES. If that fails, the event grouping is wrong."
-
-    EXACTLY one is the wrong invariant, and asserting it would fail on correct data.
-    Kalshi's own documentation defines the flag as *"If true, ONLY ONE market in this
-    event CAN resolve to 'yes'"* -- that is mutual exclusivity, i.e. AT MOST one. It says
-    nothing about exhaustiveness, and Kalshi's exclusive events are frequently not
-    exhaustive:
-
-        KXWTI-25MAY15         15 strike bands on the WTI oil price, all resolved NO
-                              -- the settlement price fell outside every listed band.
-        KXAPPRANKFREE2-25SEP14 5 named apps, all resolved NO -- a sixth app was #1.
-
-    Both were checked against the full market list from the API and both lists are
-    COMPLETE, so all-NO is the true outcome, not a missing market.
-
-    The gate therefore asserts **at most one YES**, which is exactly what mutual
-    exclusivity means and what a wrong grouping would violate: if two markets from
-    different real events were merged, two YES resolutions would appear in one event.
-    The count of all-NO exclusive events is reported separately as a descriptive fact,
-    not a failure.
-
-    Only applied to events Kalshi itself flags `mutually_exclusive` -- 41% of events are
-    NOT exclusive (a top-2-advance primary legitimately resolves two markets YES), and
-    asserting exclusivity on those would be asserting something false.
-    """
     by_event: dict[str, list[dict]] = collections.defaultdict(list)
     for m in markets:
         by_event[m["event_ticker"]].append(m)
@@ -241,8 +175,6 @@ def gate_mutually_exclusive_events(
     ]
     return GateResult(
         name="Step 4 gate: at most one YES on every mutually-exclusive event",
-        # A gate that checked nothing has not passed. BUILD_PROMPT: "Do not report a
-        # gate as passed without running it."
         passed=(not violations) and checked > 0,
         detail={
             "exclusive_events_checked": checked,
@@ -268,11 +200,6 @@ def gate_mutually_exclusive_events(
 
 
 def markets_per_event_distribution(markets: Sequence[dict]) -> dict:
-    """PREREG s5 / BUILD step 4: the distribution and the distinct event count.
-
-    s5: "Report the effective sample size -- number of distinct events, not number of
-    markets." s9 predicts it will be "much smaller than market count".
-    """
     by_event: collections.Counter = collections.Counter(m["event_ticker"] for m in markets)
     sizes = list(by_event.values())
     if not sizes:

@@ -1,18 +1,3 @@
-"""End-to-end orchestration: census -> sample -> prices -> snapshots.
-
-Order matters and is deliberate:
-
-  1. CENSUS   every non-combo settled market in the archive, metadata only. Cheap --
-              no candlestick calls -- so s2's required reporting (total markets,
-              exclusions by reason, count per category) is computed on the FULL
-              universe even though prices are only measured on a sample.
-  2. SAMPLE   an outcome-blind random draw of EVENTS, from a hash of the event ticker
-              and a fixed seed. Drawn BEFORE outcomes are joined, so it cannot select
-              on outcome, price, liquidity or volume.
-  3. PRICES   one candlestick request per sampled market.
-  4. SNAPSHOT the three horizon snapshots, each passing the Step 3 gate.
-"""
-
 from __future__ import annotations
 
 import collections
@@ -36,17 +21,9 @@ from .ingest import (
 )
 
 UTC = dt.timezone.utc
-MAX_CANDLE_SPAN_S = 5000 * CANDLE_PERIOD_MINUTES * 60   # 5000-candle server cap
+MAX_CANDLE_SPAN_S = 5000 * CANDLE_PERIOD_MINUTES * 60
 LIVE_TIER_BACKFILL_S = 45 * 86400
-"""How far before the historical cutoff the live-tier census reaches back. The archive
-tier is keyed on SETTLEMENT time and the live-tier query on CLOSE time, so without an
-overlap a market that closed before the cutoff but settled after it belongs to neither.
-45 days comfortably exceeds the longest settlement lag observed (3 days)."""
-
 FINE_WINDOW_S = 6 * 3600
-"""How far back the 1-minute fetch for the T-1h horizon reaches. Six hours is 360
-candles, far inside the 5000-candle cap, and long enough to carry forward across the
-longest candle gaps observed (31 minutes)."""
 
 
 class ExclusionCounter(collections.Counter):
@@ -54,12 +31,7 @@ class ExclusionCounter(collections.Counter):
         self[reason] += n
 
 
-# ---------------------------------------------------------------------------
-# 1. Census
-# ---------------------------------------------------------------------------
-
 def _build_row(m: dict, series: dict[str, dict], tier: str, excl: ExclusionCounter):
-    """Turn one raw market into a census row, or return None with a counted reason."""
     st = series.get(m["series_ticker"])
     if st is None:
         excl.add("series_not_in_series_index")
@@ -87,8 +59,6 @@ def _build_row(m: dict, series: dict[str, dict], tier: str, excl: ExclusionCount
 
 
 def _stream_census(client, cutoff_ts, now_ts, archive_pages, live_pages, log, label):
-    """Yield (raw_market, tier) over both tiers. Pages are HTTP-cached, so a second
-    pass over the same census costs no requests."""
     n = 0
     log(f"  {label}: archive tier (/historical/markets?mve_filter=exclude) ...")
     for m in census_archive_tier(client, max_pages=archive_pages):
@@ -98,11 +68,6 @@ def _stream_census(client, cutoff_ts, now_ts, archive_pages, live_pages, log, la
             log(f"    archive: {n:,} scanned")
     log(f"    archive done: {n:,} scanned")
     n2 = 0
-    # The two tiers are keyed differently: the archive tier holds markets SETTLED before
-    # the cutoff, while the live-tier query filters on CLOSE time. A market that closed
-    # before the cutoff but settled after it would fall through the gap. The live window
-    # therefore starts LIVE_TIER_BACKFILL_S before the cutoff; duplicates are dropped on
-    # ticker by the caller, so the overlap costs pages but never double-counts a market.
     live_from = cutoff_ts - LIVE_TIER_BACKFILL_S
     log(f"  {label}: live tier (/markets?status=settled&mve_filter=exclude) "
         f"from {iso(live_from)} (cutoff minus {LIVE_TIER_BACKFILL_S // 86400}d overlap) ...")
@@ -123,17 +88,6 @@ def run_census(
     live_pages: int | None = None,
     log: Callable[[str], None] = print,
 ) -> tuple[dict, ExclusionCounter, dict]:
-    """PASS 1 of 2. Every non-combo settled market in the public archive.
-
-    NOTHING is written to disk. The archive is millions of markets, and persisting the
-    rows cost 1.7 GB before this was restructured -- unacceptable on a machine with
-    limited free space. What stays resident is the summary counters plus a compact
-    per-event index (event -> category, market count), which is what the sampling needs.
-
-    The sampled rows themselves are recovered in pass 2 by `collect_sampled_markets()`,
-    which replays exactly the same pages out of the HTTP cache and therefore costs no
-    additional requests.
-    """
     seen: set[str] = set()
     excl = ExclusionCounter()
     t0 = time.time()
@@ -218,19 +172,6 @@ def run_census(
 def probe_combo_share(
     client: KalshiClient, pages_per_tier: int = 15, log: Callable[[str], None] = print
 ) -> dict:
-    """Measure how much of the settled universe is MVE combo parlays.
-
-    s2 requires excluded markets to be COUNTED. But the census uses the API's own
-    `mve_filter=exclude`, which drops combos server-side, so they never reach the
-    exclusion counter -- it would report zero and look like there were none. This is a
-    BOUNDED, separate measurement: the same listing endpoints are paged WITHOUT the
-    filter for a fixed number of pages, and the observed combo share is reported.
-
-    It is an estimate over the most recent pages of each tier, not an exact count. An
-    exact count would need a full unfiltered crawl of a universe that is ~99.7% combos,
-    which is precisely the cost `mve_filter=exclude` exists to avoid. Reported as an
-    estimate, with its page count, rather than presented as exact.
-    """
     out = {}
     for tier, path in (("archive", "/historical/markets"),
                        ("live", "/markets?status=settled")):
@@ -264,10 +205,6 @@ def collect_sampled_markets(
     live_pages: int | None = None,
     log: Callable[[str], None] = print,
 ) -> list[dict]:
-    """PASS 2 of 2. Replay the census and keep only markets in the sampled events.
-
-    Every page was cached during pass 1, so this makes no network requests.
-    """
     excl = ExclusionCounter()
     seen: set[str] = set()
     out: list[dict] = []
@@ -286,7 +223,6 @@ def collect_sampled_markets(
 
 
 def census_report(markets: Sequence[dict], excl: ExclusionCounter) -> dict:
-    """PREREG s2: total markets, exclusions by reason, and the count per category."""
     by_cat = collections.Counter(m["category"] for m in markets)
     by_result = collections.Counter(str(m.get("result")) for m in markets)
     definitive = [m for m in markets if m.get("result") in DEFINITIVE_RESULTS]
@@ -317,17 +253,12 @@ def census_report(markets: Sequence[dict], excl: ExclusionCounter) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# 2. Sample
-# ---------------------------------------------------------------------------
-
 def draw_event_sample_from_index(
     event_index: dict,
     per_category: int,
     seed: int = SAMPLE_SEED,
     max_markets_per_category: int | None = None,
 ) -> tuple[set[str], dict]:
-    """Same draw as draw_event_sample, from the compact index the census streams out."""
     ev_cat = event_index["event_category"]
     ev_size = collections.Counter(event_index["event_size"])
     return _draw(ev_cat, ev_size, per_category, seed, max_markets_per_category)
@@ -339,20 +270,6 @@ def draw_event_sample(
     seed: int = SAMPLE_SEED,
     max_markets_per_category: int | None = None,
 ) -> tuple[set[str], dict]:
-    """Outcome-blind stratified draw over events, bounded by a market budget.
-
-    An event's category comes from its series, which is fixed before any market
-    resolves. The draw itself is a hash of (seed, event_ticker) ONLY -- it cannot see
-    outcome, price, liquidity or volume.
-
-    Events are taken in ascending hash order until either `per_category` events or
-    `max_markets_per_category` markets are reached. The market budget is needed because
-    event size is wildly uneven: auto-generated strike ladders put 300-400 markets in a
-    single event, and one such event costs as much to fetch as 30 ordinary ones while
-    contributing exactly one cluster to the effective N. Truncating in hash order keeps
-    the draw outcome-blind: the order is fixed by the seed before anything is known about
-    any event, and no event is skipped for any property of itself.
-    """
     ev_cat: dict[str, str] = {}
     ev_size: collections.Counter = collections.Counter()
     for m in markets:
@@ -380,7 +297,6 @@ def _draw(ev_cat, ev_size, per_category, seed, max_markets_per_category):
                 if taken:
                     truncated[cat] = "market budget reached"
                     break
-                # never let a single oversized event block a category entirely
             taken.append(ev)
             mk += ev_size[ev]
         chosen |= set(taken)
@@ -403,10 +319,6 @@ def _draw(ev_cat, ev_size, per_category, seed, max_markets_per_category):
     }
 
 
-# ---------------------------------------------------------------------------
-# 3/4. Prices and snapshots
-# ---------------------------------------------------------------------------
-
 def build_snapshots(
     client: KalshiClient,
     markets: Sequence[dict],
@@ -414,7 +326,6 @@ def build_snapshots(
     log: Callable[[str], None] = print,
     log_every: int = 2000,
 ) -> tuple[list[Snapshot], ExclusionCounter, dict]:
-    """One candlestick request per market; three horizon snapshots out."""
     reasons = ExclusionCounter()
     snaps: list[Snapshot] = []
     no_candles = 0
@@ -427,7 +338,6 @@ def build_snapshots(
             reasons.add("market:non_definitive_outcome")
             continue
         close_ts, open_ts = m["close_ts"], m["open_ts"]
-        # one 60-minute request spans up to 208 days and serves all three horizons
         start = max(open_ts, close_ts - MAX_CANDLE_SPAN_S)
         if start > open_ts:
             truncated_window += 1
@@ -440,9 +350,6 @@ def build_snapshots(
             reasons.add("market:no_candlesticks_returned")
             continue
 
-        # A second, 1-MINUTE fetch for the T-1h horizon. Hourly candles are too coarse
-        # there: they would place the "T-1h" price up to 59 minutes early, and a market
-        # that lived under two hours would have no hourly candle at or before T-1h at all.
         fine: list = []
         t1h = close_ts - HORIZONS["T-1h"]
         if t1h > open_ts:
@@ -471,10 +378,6 @@ def build_snapshots(
         "seconds": round(time.time() - t0, 1),
     }
 
-
-# ---------------------------------------------------------------------------
-# Persistence helpers
-# ---------------------------------------------------------------------------
 
 def derived(name: str) -> str:
     os.makedirs(DERIVED_DIR, exist_ok=True)

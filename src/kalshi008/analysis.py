@@ -1,15 +1,3 @@
-"""Calibration tables, significance, the fee overlay and the permutation null.
-
-PREREG_008 s6 fixes the thresholds and s5 fixes what governs them:
-  * 10 buckets x 6 categories x 3 horizons = 180 individual tests, Bonferroni t > 3.5
-  * 3 pooled per-horizon tests, t > 2.0
-  * the CLUSTERED figures govern; naive figures are reported alongside for contrast
-  * the effective sample size is the number of distinct EVENTS, not markets
-
-All 180 cells are reported, including empty ones. BUILD step 5: "Report all 180 cells.
-Do not summarise to the interesting ones."
-"""
-
 from __future__ import annotations
 
 import datetime as dt
@@ -42,12 +30,7 @@ def snapshots_to_frame(snapshots: Iterable) -> pd.DataFrame:
     return df
 
 
-# ---------------------------------------------------------------------------
-# The 180 cells
-# ---------------------------------------------------------------------------
-
 def build_cells(df: pd.DataFrame, cluster_col: str = "event_ticker") -> pd.DataFrame:
-    """Every bucket x category x horizon cell, populated or not."""
     records = []
     for horizon in HORIZONS:
         for category in CATEGORIES:
@@ -83,7 +66,6 @@ def build_cells(df: pd.DataFrame, cluster_col: str = "event_ticker") -> pd.DataF
 
 
 def pooled_by_horizon(df: pd.DataFrame, cluster_col: str = "event_ticker") -> pd.DataFrame:
-    """s6's 3 aggregate tests: all categories pooled, one per horizon, t > 2.0."""
     recs = []
     for horizon in HORIZONS:
         sub = df[df["horizon"] == horizon] if not df.empty else df
@@ -101,12 +83,6 @@ def pooled_by_horizon(df: pd.DataFrame, cluster_col: str = "event_ticker") -> pd
 
 
 def pooled_by_horizon_bucket(df: pd.DataFrame, cluster_col: str = "event_ticker") -> pd.DataFrame:
-    """All categories pooled, per bucket, per horizon (30 cells).
-
-    s8's "market is calibrated" test reads: "if the pooled test shows
-    |realized - implied| within the fee floor at EVERY BUCKET, at all three horizons".
-    That requires the pooled figure per bucket, which is this table.
-    """
     recs = []
     for horizon in HORIZONS:
         for b in range(N_BUCKETS):
@@ -123,18 +99,7 @@ def pooled_by_horizon_bucket(df: pd.DataFrame, cluster_col: str = "event_ticker"
     return pd.DataFrame.from_records(recs)
 
 
-# ---------------------------------------------------------------------------
-# Fee overlay (s6, BUILD step 7)
-# ---------------------------------------------------------------------------
-
 def fee_floor_table(df: pd.DataFrame) -> pd.DataFrame:
-    """Fee-equivalent price error per bucket, at the realised mean price in each bucket.
-
-    The floor is evaluated at the bucket's own mean implied price where observations
-    exist, and at the bucket midpoint where they do not. The effective per-series
-    fee multiplier is averaged over the observations in the bucket, so series with
-    multiplier 0 correctly lower the floor they face.
-    """
     recs = []
     for b in range(N_BUCKETS):
         lo, hi = BUCKET_EDGES[b], BUCKET_EDGES[b + 1]
@@ -158,17 +123,6 @@ def fee_floor_table(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def cell_fee_floors(df: pd.DataFrame) -> pd.DataFrame:
-    """Fee floor for each of the 180 cells, at THAT CELL's own mean price and multiplier.
-
-    The fee is quadratic in price, so evaluating it at a bucket-wide average pooled over
-    all six categories and all three horizons would apply the wrong floor to any cell
-    whose own mean price sits away from that average -- and the error is largest exactly
-    at the bucket edges. s6 asks for the fee-equivalent price error "per bucket"; doing it
-    per cell is the same quantity evaluated where it is actually used.
-
-    Cells with no observations fall back to the bucket midpoint at multiplier 1, which is
-    what the reported per-bucket table shows.
-    """
     recs = []
     for horizon in HORIZONS:
         for category in CATEGORIES:
@@ -197,11 +151,6 @@ def cell_fee_floors(df: pd.DataFrame) -> pd.DataFrame:
 
 def apply_fee_overlay(cells: pd.DataFrame, floors: pd.DataFrame,
                       df: pd.DataFrame | None = None) -> pd.DataFrame:
-    """Join the floor onto every cell and mark which clear BOTH gates.
-
-    When `df` is supplied the floor is evaluated PER CELL (see cell_fee_floors); the
-    bucket-level `floors` table is then used only for the reported per-bucket overlay.
-    """
     if df is not None:
         cf = cell_fee_floors(df)
         out = cells.merge(cf, on=["horizon", "category", "bucket"], how="left")
@@ -220,17 +169,7 @@ def apply_fee_overlay(cells: pd.DataFrame, floors: pd.DataFrame,
     return out
 
 
-# ---------------------------------------------------------------------------
-# Coarse re-clustering (DECISIONS_008 decision 11)
-# ---------------------------------------------------------------------------
-
 def recluster_hits(df: pd.DataFrame, cells: pd.DataFrame) -> pd.DataFrame:
-    """Re-test every cell that cleared t > 3.5 under a strictly coarser cluster key.
-
-    The coarse key is series_ticker + close date, which merges an NFL game's
-    moneyline/spread/total events and a crypto ladder's sibling events. A finding must
-    survive BOTH. This can only remove findings, never add them.
-    """
     hits = cells[cells["passes_corrected"].fillna(False)]
     recs = []
     for _, row in hits.iterrows():
@@ -255,13 +194,8 @@ def recluster_hits(df: pd.DataFrame, cells: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-# ---------------------------------------------------------------------------
-# Permutation null (BUILD step 8)
-# ---------------------------------------------------------------------------
-
 @dataclass
 class NullResult:
-    """Result of one null test over the whole 180-cell table."""
     label: str
     n_replications: int
     cells_passing_corrected: list[int]
@@ -291,24 +225,9 @@ class PermutationResult:
 
 
 NOMINAL_P_EXCEED = 2.0 * (1.0 - 0.9997673709)
-"""Two-sided normal tail beyond |t| = 3.5, i.e. P(|Z| > 3.5) ~ 4.65e-4."""
 
 
 def null_pass_criterion(observed_total: int, n_tests: int) -> dict:
-    """Judge a null result against its own expectation instead of demanding exact zero.
-
-    Requiring ZERO cells above t = 3.5 across every replication is the wrong bar. With
-    180 cells and 8 replications there are ~1,440 tests, so even a perfectly calibrated
-    pipeline is expected to throw about 0.7 exceedances and will show at least one
-    roughly a quarter of the time. Demanding zero would stamp a correct run UNUSABLE by
-    chance far too often.
-
-    The criterion is instead: is the observed exceedance count consistent with the
-    nominal rate? The threshold is the 99th percentile of Poisson(expected), so a correct
-    pipeline fails at most 1% of the time, while a pipeline with genuinely broken standard
-    errors -- which inflates the count by one to two orders of magnitude, as the 3.1%
-    ladder bug did -- is caught immediately.
-    """
     expected = n_tests * NOMINAL_P_EXCEED
     try:
         from scipy.stats import poisson
@@ -339,7 +258,6 @@ def _score_table(perm: pd.DataFrame) -> tuple[int, int, float, float]:
 
 
 def _n_populated(df: pd.DataFrame) -> int:
-    """Cells that actually carry observations -- the real number of tests per replication."""
     if df.empty:
         return 0
     return int(df.groupby(["horizon", "category", "bucket"]).size().shape[0])
@@ -348,19 +266,6 @@ def _n_populated(df: pd.DataFrame) -> int:
 def bernoulli_null(
     df: pd.DataFrame, n: int = PERMUTATIONS, seed: int = PERMUTATION_SEED
 ) -> NullResult:
-    """Resample every outcome as Bernoulli(implied price).
-
-    This is the null that actually tests BUILD step 8's stated concern -- "is the
-    pipeline manufacturing significance?". Under it the market is PERFECTLY CALIBRATED
-    BY CONSTRUCTION at every price, so the true difference in every cell is zero. Any
-    cell reaching t > 3.5 therefore means the standard errors are too small: the
-    clustering, the residuals or the table construction is inventing significance out of
-    noise. That is exactly the failure the step exists to catch.
-
-    The literal within-category permutation cannot serve this purpose: it destroys the
-    price-outcome relationship, so it FORCES large deviations in the extreme buckets on
-    any calibrated dataset. See `permutation_null` and DECISIONS_008 decision 14.
-    """
     rng = np.random.default_rng(seed + 1)
     pc: list[int] = []
     pu: list[int] = []
@@ -393,22 +298,6 @@ def bernoulli_null(
 def clustered_bernoulli_null(
     df: pd.DataFrame, n: int = PERMUTATIONS, seed: int = PERMUTATION_SEED
 ) -> NullResult:
-    """Bernoulli resample with MAXIMAL positive dependence inside each event.
-
-    One uniform draw per EVENT, shared by every market in it: market i resolves YES iff
-    u_g < p_i. Each market's marginal probability is still exactly p_i, so the market is
-    calibrated by construction, but markets inside an event now move together perfectly --
-    the comonotonic coupling, which is the worst case for a clustered standard error.
-
-    This is the null that would have caught the bug described in stats.py: a nested
-    threshold ladder inside one event_ticker ("temp above 68 / above 69 / above 70"),
-    which is a real and common Kalshi structure. The plain `bernoulli_null` draws
-    independently per market and therefore CANNOT see that failure mode -- under
-    independence the naive binomial standard error happens to be correct.
-
-    Any cell reaching t > 3.5 here means the clustering is not absorbing real within-event
-    dependence.
-    """
     rng = np.random.default_rng(seed + 2)
     pc: list[int] = []
     pu: list[int] = []
@@ -444,18 +333,6 @@ def clustered_bernoulli_null(
 def permutation_null(
     df: pd.DataFrame, n: int = PERMUTATIONS, seed: int = PERMUTATION_SEED
 ) -> PermutationResult:
-    """Permute settled outcomes WITHIN each category and re-run the whole table.
-
-    BUILD step 8: "Permute settlement outcomes within each category, preserving the
-    marginal YES rate... Expected: no cells pass t > 3.5. If cells pass under
-    permutation, the pipeline is manufacturing significance and no result from it is
-    usable."
-
-    The shuffle is within-category, so each category's YES count -- and therefore its
-    marginal YES rate -- is EXACTLY preserved in every replication, not merely preserved
-    in expectation. Permutation is applied per horizon so that each horizon's own
-    population is permuted within itself.
-    """
     rng = np.random.default_rng(seed)
     passing_c: list[int] = []
     passing_u: list[int] = []
@@ -486,10 +363,6 @@ def permutation_null(
     )
 
 
-# ---------------------------------------------------------------------------
-# Book-quality diagnostic
-# ---------------------------------------------------------------------------
-
 SPREAD_BANDS: tuple[tuple[float, float, str], ...] = (
     (-0.01, 2.0, "spread <= 2c"),
     (2.0, 5.0, "2c < spread <= 5c"),
@@ -500,18 +373,6 @@ SPREAD_BANDS: tuple[tuple[float, float, str], ...] = (
 
 
 def book_quality_table(df: pd.DataFrame) -> pd.DataFrame:
-    """Calibration split by how real the price actually is.
-
-    s3 says "mid price" without saying what to do when the book barely exists. On Kalshi
-    it frequently barely exists: a snapshot of `yes_bid = 0.0000, yes_ask = 0.94` has a
-    "mid" of 47c, which lands in the [40,50) bucket, but it is not a price -- it means
-    nobody is bidding and someone is offering at 94c.
-
-    s9 warned that "a large, clean miscalibration would be surprising and should be
-    treated as a bug first". This table is that check. It is a LIQUIDITY-CONDITIONED
-    split, which s2 forbids for the headline result, so it is reported as a diagnostic
-    only and changes no reported cell.
-    """
     recs = []
 
     def row(label: str, sub: pd.DataFrame, group: str) -> None:
@@ -538,12 +399,7 @@ def book_quality_table(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame.from_records(recs)
 
 
-# ---------------------------------------------------------------------------
-# Robustness checks
-# ---------------------------------------------------------------------------
-
 def fresh_subset(df: pd.DataFrame) -> pd.DataFrame:
-    """Decision 12: snapshots no staler than one horizon-period."""
     if df.empty:
         return df
     limit = df["horizon"].map(FRESH_LIMITS)
@@ -551,7 +407,6 @@ def fresh_subset(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def all_three_horizons_subset(df: pd.DataFrame) -> pd.DataFrame:
-    """Decision 6: the s2 reading -- markets qualifying at ALL THREE horizons."""
     if df.empty:
         return df
     counts = df.groupby("ticker")["horizon"].nunique()
@@ -559,13 +414,8 @@ def all_three_horizons_subset(df: pd.DataFrame) -> pd.DataFrame:
     return df[df["ticker"].isin(keep)]
 
 
-# ---------------------------------------------------------------------------
-# s8 conclusion
-# ---------------------------------------------------------------------------
-
 def prereg_conclusion(cells: pd.DataFrame, pooled_bucket: pd.DataFrame, floors: pd.DataFrame,
                       recluster: pd.DataFrame) -> dict:
-    """The s8 decision, computed mechanically from the tables. No judgement applied."""
     findings = cells[cells["is_finding_1leg"].fillna(False)]
     if not recluster.empty and len(findings):
         survivors = {
@@ -578,9 +428,6 @@ def prereg_conclusion(cells: pd.DataFrame, pooled_bucket: pd.DataFrame, floors: 
             )
         ]
 
-    # s8's second bullet: "The same directional bias visible at two or more of the three
-    # horizons". VISIBLE, not "also a finding" -- so the sign is read off the FULL cells
-    # table for that category+bucket, not off the subset that cleared every gate.
     directional_ok = False
     detail = []
     if len(findings):
@@ -599,10 +446,6 @@ def prereg_conclusion(cells: pd.DataFrame, pooled_bucket: pd.DataFrame, floors: 
                 n_horizons_same_direction=n_same_sign, meets_two_horizon_rule=ok,
             ))
 
-    # s8's "market is calibrated" requires the pooled deviation inside the fee floor
-    # "at every bucket, at all three horizons". A bucket-horizon that was never measured
-    # is not evidence of calibration, so incomplete coverage BLOCKS the verdict rather
-    # than being silently dropped.
     pb = pooled_bucket.merge(floors[["bucket", "fee_floor_cents_1leg"]], on="bucket", how="left")
     pb_pop = pb[pb["n_markets"] > 0]
     n_expected = N_BUCKETS * len(HORIZONS)
